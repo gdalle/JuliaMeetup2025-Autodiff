@@ -1,0 +1,526 @@
+---
+title: "Automatic differentiation"
+subtitle: "A tale of two languages"
+author:
+  - name: Guillaume Dalle
+    orcid: 0000-0003-4866-1687
+    email: guillaume.dalle@enpc.fr
+    affiliation: 
+      - name: "École nationale des Ponts et Chaussées"
+      - department: LVMT
+date: "2025-03-18"
+bibliography: AD.bib
+engine: julia
+format:
+  revealjs:
+    slide-number: true
+    overview: true
+    code-line-numbers: false
+    scrollable: true
+    width: 1280
+    height: 720
+execute:
+  echo: true
+  freeze: auto
+  error: true
+from: markdown+emoji
+---
+
+# Introduction
+
+## Slides
+
+<https://gdalle.github.io/JuliaMeetup2025-AutoDiff/>
+
+## Motivation
+
+::: {.callout-note}
+## What is differentiation?
+
+Finding a linear approximation of a function around a point.
+:::
+
+::: {.callout-important}
+## Why do we care?
+
+Derivatives of computer programs are essential in optimization and machine learning.
+:::
+
+::: {.callout-tip}
+## What do we need to do?
+
+Not much: automatic differentiation (AD) computes derivatives for us!
+:::
+
+# Flavors of differentiation
+
+## Derivatives: formal definition
+
+Derivative of $f: \mathbb{R}^n \to \mathbb{R}^m$ at point $x$: linear map $\partial f(x)$ such that
+$$f(x + \varepsilon) = f(x) + \partial f(x)[\varepsilon] + o(\varepsilon)$$
+
+- For $n = 1, m = 1$, derivative represented by a number $f'(x)$
+- For $n > 1, m = 1$, derivative represented by a gradient vector $\nabla f(x)$ 
+- For $n > 1, m > 1$, derivative represented by a Jacobian matrix 
+
+$$\partial f(x) = \left(\frac{\partial f_i}{\partial x_j} (x)\right)_{1 \leq i \leq n, 1 \leq j \leq m}$$
+
+## Manual differentiation
+
+Write down formulas like you're in high school.
+
+:::: {.columns}
+
+::: {.column width="50%"}
+
+```{julia}
+#| output: false
+f(x) = √x  # computes sqrt
+
+function g(x)  # computes approximate sqrt
+  y = x
+  for i in 1:3
+    y = 0.5 * (y + x/y)
+  end
+  return y
+end
+```
+
+:::
+
+::: {.column width="50%"}
+
+```{julia}
+#| output: false
+
+df(x) = 1 / 2√x
+dg(x) = @info "I'm too lazy"
+```
+
+```{julia}
+x = 2.0
+f(x), df(x)
+```
+```{julia}
+g(x), dg(x)
+```
+:::
+
+::::
+
+::: {.callout-warning}
+## Drawback
+
+Labor-intensive, error-prone.
+:::
+
+## Symbolic differentiation
+
+Ask Mathematica / Wolfram Alpha to work out formulas for you.
+
+```{julia}
+#| output: false
+using Symbolics, Latexify; xvar = Symbolics.variable(:x)
+```
+
+:::: {.columns}
+
+::: {.column width="50%"}
+
+```{julia}
+latexify(Symbolics.derivative(f(xvar), xvar))
+```
+
+:::
+
+::: {.column width="50%"}
+
+```{julia}
+latexify(Symbolics.derivative(g(xvar), xvar))
+```
+
+:::
+
+::::
+
+::: {.callout-warning}
+## Drawback
+
+Does not scale to more complex functions.
+:::
+
+## Numeric differentiation
+
+Rely on finite differences with a small perturbation.
+
+$$\partial f(x)[\varepsilon] \approx \frac{f(x + \varepsilon) - f(x)}{\varepsilon}$$
+
+:::: {.columns}
+
+::: {.column width="33%"}
+
+```{julia}
+ε1 = 1e-1  # too large
+(f(x + ε1) - f(x)) / ε1
+```
+
+:::
+
+::: {.column width="33%"}
+
+```{julia}
+ε2 = 1e-5  # just right
+(f(x + ε2) - f(x)) / ε2
+```
+
+:::
+
+::: {.column width="33%"}
+
+```{julia}
+ε3 = 1e-15  # too small
+(f(x + ε3) - f(x)) / ε3
+```
+
+:::
+
+::::
+
+::: {.callout-warning}
+## Drawback
+
+Truncation or floating point errors depending on $\varepsilon$.
+:::
+
+## Automatic (or algorithmic) differentiation
+
+Reinterpret the program computing $f$ to obtain $\partial f(x)$ instead.
+
+:::: {.columns}
+
+::: {.column width="80%"}
+
+```{julia}
+import Base: *, +, /, sqrt
+
+struct Dual
+  val::Float64
+  der::Float64
+end
+
+*(a, x::Dual) = Dual(a*x.val, a*x.der)
++(x::Dual, y::Dual) = Dual(x.val+y.val, x.der+y.der)
+/(x::Dual, y::Dual) = Dual(x.val/y.val, (x.der*y.val-y.der*x.val)/y.val^2)
+sqrt(x::Dual) = Dual(√x.val, x.der/2√x.val);
+```
+
+:::
+
+::: {.column width="20%"}
+
+```{julia}
+f(Dual(2.0, 1.0))
+```
+
+```{julia}
+g(Dual(2.0, 1.0))
+```
+
+:::
+
+::::
+
+::: {.callout-warning}
+## Drawback
+
+Hard to reinterpret arbitrary code efficiently.
+:::
+
+# AD under the hood
+
+## How it works
+
+1. Hardcoded derivatives of basic functions: $+, \times, \exp, \log, \sin, \cos$
+2. Composition with the chain rule:
+
+$$ f = g \circ h \qquad \implies \qquad \partial f(x) = \partial g(h(x)) \circ \partial h(x)$$ 
+
+Main implementation paradigms:
+
+:::: {.columns}
+
+::: {.column width="50%"}
+
+
+::: {.callout-tip}
+## Operator overloading
+
+Define new types augmenting runtime operations.
+:::
+
+:::
+
+::: {.column width="50%"}
+
+::: {.callout-tip}
+## Source transformation
+
+Preprocess the source code at compile time.
+:::
+
+:::
+
+::::
+
+## Two different modes
+
+Consider $f : x \in \mathbb{R}^n \longmapsto y \in \mathbb{R}^m$. Time $T(f)$ = one evaluation of $f$.
+
+:::: {.columns}
+
+::: {.column width="45%"}
+
+**Forward mode**
+
+At cost $\propto T(f)$, get all $m$ partial derivatives wrt input $x_i$.
+
+Propagate an input perturbation onto the outputs.
+
+:::
+
+::: {.column width="10%"}
+:::
+
+::: {.column width="45%"}
+
+**Reverse mode**
+
+At cost $\propto T(f)$, get all $n$ partial sensitivities for output $y_j$.
+
+Backpropagate an output sensitivity onto the inputs.
+
+:::
+
+::::
+
+::: {.callout-important}
+## Why is deep learning possible?
+
+Because gradients in reverse mode are fast.
+:::
+
+# AD in Python and Julia
+
+## A flurry of options
+
+In Python, three main AD _frameworks_:
+
+:::: {.columns}
+
+::: {.column width="33%"}
+- [`TensorFlow`](https://www.tensorflow.org/)
+:::
+
+::: {.column width="33%"}
+- [`PyTorch`](https://pytorch.org/)
+:::
+
+::: {.column width="33%"}
+- [`JAX`](https://jax.readthedocs.io/en/latest/index.html)
+:::
+
+::::
+
+In Julia, a dozen or so AD _backends_:
+
+:::: {.columns}
+
+::: {.column width="33%"}
+- [`Enzyme.jl`](https://github.com/EnzymeAD/Enzyme.jl)
+- [`FastDifferentiation.jl`](https://github.com/brianguenter/FastDifferentiation.jl)
+- [`FiniteDiff.jl`](https://github.com/JuliaDiff/FiniteDiff.jl)
+:::
+
+::: {.column width="33%"}
+- [`FiniteDifferences.jl`](https://github.com/JuliaDiff/FiniteDifferences.jl)
+- [`ForwardDiff.jl`](https://github.com/JuliaDiff/ForwardDiff.jl)
+- [`Mooncake.jl`](https://github.com/compintell/Mooncake.jl)
+- [`ReverseDiff.jl`](https://github.com/JuliaDiff/ReverseDiff.jl)
+:::
+
+::: {.column width="33%"}
+- [`Symbolics.jl`](https://github.com/JuliaSymbolics/Symbolics.jl)
+- [`Tracker.jl`](https://github.com/FluxML/Tracker.jl)
+- [`Zygote.jl`](https://github.com/FluxML/Zygote.jl)
+:::
+
+
+::::
+
+Each backend has its use cases, especially for scientific ML.
+
+## Python & Julia: users {.smaller}
+
+![](img/python_julia_user.png)
+
+::: {style="font-size: 50%;"}
+
+Image: courtesy of Adrian Hill
+
+:::
+
+## Python & Julia: developers {.smaller}
+
+![](img/python_julia_dev.png)
+
+::: {style="font-size: 50%;"}
+
+Image: courtesy of Adrian Hill
+
+:::
+
+## Why the difference?
+
+|  | Python | Julia |
+|---------|:-----|:------|
+| Math & tensors | Framework-specific | Part of the core language |
+| AD development | Centralized (x3) | Decentralized |
+| Limits of AD | :white_check_mark: Well-defined | :x: Fuzzy |
+| Scientific libraries | :x: Split effort | :white_check_mark: Shared effort |
+
+::: {.callout-tip}
+## Does it have to be this way?
+
+AD could be a language feature instead of a post-hoc addition.
+:::
+
+# DifferentiationInterface
+
+## Switching backends at low cost
+
+:::: {.columns}
+
+::: {.column width="50%"}
+
+[`Keras`](https://keras.io/) now supports `Tensorflow`, `PyTorch` and `JAX`.
+
+![](img/keras.jpg){width=600}
+
+::: {style="font-size: 50%;"}
+
+Image: from Keras 3.0 [blog post](https://keras.io/keras_3/)
+
+:::
+
+:::
+
+::: {.column width="50%"}
+
+[`DifferentiationInterface.jl`](https://github.com/JuliaDiff/DifferentiationInterface.jl) talks to all Julia AD backends.
+
+- Downloads per month: 20k
+- Indirect dependents: 427
+- Famous clients: `Optimization.jl`, `Turing.jl`, `NonlinearSolve.jl`
+
+:::
+
+::::
+
+## Benefit 1: Standardization
+
+Only one repo containing AD bindings: easier to maintain and improve.
+
+Switching backends is now instantaneous.
+
+::: {.column width="50%"}
+
+```{julia}
+using DifferentiationInterface
+import ReverseDiff  # this changes
+backend = AutoForwardDiff()  # this changes
+
+f(x) = sum(abs2, x)
+x = float.(1:4)
+p = prepare_gradient(f, backend, similar(x))
+gradient(f, p, backend, x)
+```
+
+:::
+
+::: {.column width="50%"}
+
+```{julia}
+using DifferentiationInterface
+import ReverseDiff  # this changes
+backend = AutoReverseDiff()  # this changes
+
+f(x) = sum(abs2, x)
+x = float.(1:4)
+p = prepare_gradient(f, backend, similar(x))
+gradient(f, p, backend, x)
+```
+
+:::
+
+Preliminary work is abstracted away into a preparation step.
+
+## Benefit 2: Superpowers
+
+Having a common interface lets us do things we couldn't do before:
+
+::: {.column width="50%"}
+- Second-order differentiation
+:::
+
+::: {.column width="50%"}
+- Sparsity handling
+:::
+
+```{julia}
+using DifferentiationInterface, SparseConnectivityTracer, SparseMatrixColorings
+import ForwardDiff, ReverseDiff
+
+backend = AutoSparse(
+  SecondOrder(AutoForwardDiff(), AutoReverseDiff());
+  sparsity_detector=TracerSparsityDetector(), coloring_algorithm=GreedyColoringAlgorithm()
+)
+f(x) = sum(abs2, x)
+x = float.(1:4)
+p = prepare_hessian(f, backend, similar(x))
+hessian(f, p, backend, x)
+```
+
+# Conclusion
+
+## Take-home message
+
+Computing derivatives is **automatic** and **efficient**.
+
+Each AD system comes with **limitations**, learn to recognize them.
+
+Julia is a great ecosystem to **play around with AD**.
+
+::: {.callout-note}
+## Do you have a tricky AD problem?
+
+Reach out to me, let's figure it out! My website: [gdalle.github.io](https://gdalle.github.io/)
+:::
+
+## Bibliography
+
+- @blondelElementsDifferentiableProgramming2024: the most recent book
+- @griewankEvaluatingDerivativesPrinciples2008: the bible of the field
+- @baydinAutomaticDifferentiationMachine2018, @margossianReviewAutomaticDifferentiation2019: concise surveys
+
+## Going further
+
+- [x] AD through a simple function
+- [ ] AD through a differential equation [@sapienzaDifferentiableProgrammingDifferential2024]
+- [ ] AD through a stochastic expectation [@mohamedMonteCarloGradient2020]
+- [ ] AD through a convex optimizer [@blondelEfficientModularImplicit2022]
+- [ ] AD through a discrete optimizer [@mandiDecisionFocusedLearningFoundations2024]
+
+## References
+
+::: {#refs}
+:::
